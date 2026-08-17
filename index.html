@@ -75,6 +75,13 @@ label{font-size:12px;color:var(--text-secondary);display:block;margin-bottom:3px
 .bar-fill{height:100%;background:var(--brand);border-radius:5px 0 0 5px;}
 .bar-val{width:56px;text-align:right;font-weight:700;flex-shrink:0;}
 .activity-item{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px;}
+.list-row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:12px 4px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+.list-row:last-child{border-bottom:none;}
+.list-row .list-main{flex:1;min-width:220px;}
+.list-row .list-title{font-weight:700;font-size:13.5px;color:var(--text);}
+.list-row .list-meta{font-size:12px;color:var(--text-secondary);margin-top:3px;}
+.list-row .list-side{display:flex;align-items:center;gap:12px;flex-shrink:0;}
+.list-row .list-qty{font-weight:700;font-size:15px;min-width:46px;text-align:right;}
 .activity-item:last-child{border-bottom:none;}
 .activity-item .side{color:var(--text-secondary);white-space:nowrap;}
 .scan-box{background:var(--brand-pale);border:2px dashed var(--brand);border-radius:8px;padding:16px;text-align:center;}
@@ -307,7 +314,20 @@ function stockActual(sku){
   return base + ent - sal;
 }
 
-function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstElementChild; }
+// el(): convierte un string de HTML en un elemento real. OJO: si el HTML es
+// una fila <tr>...</tr>, el navegador IGNORA las etiquetas <tr>/<td> cuando se
+// insertan dentro de un <div> normal (regla del parser HTML), y el contenido
+// se pierde o queda incompleto. Por eso, para filas de tabla, se arma dentro
+// de un <table><tbody> temporal, que sí es un contexto válido.
+function el(html){
+  html = html.trim();
+  if(/^<tr[\s>]/i.test(html)){
+    const t = document.createElement('table');
+    t.innerHTML = '<tbody>'+html+'</tbody>';
+    return t.querySelector('tr');
+  }
+  const d=document.createElement('div'); d.innerHTML=html; return d.firstElementChild;
+}
 function escapeHtml(s){ return (s??'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ---------------------------------------------------------------
@@ -877,28 +897,43 @@ function renderEntradas(main){
     reader.readAsArrayBuffer(file);
   };
 
-  // --- Panel 4: historial ---
+  // --- Panel 4: historial (formato lista, no tabla) ---
   const tablePanel = el(`<div class="panel">
     <h2>Historial de entradas (${DB.entradas.length})</h2>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Fecha</th><th>SKU</th><th>Producto</th><th>Cantidad</th><th>Proveedor</th><th>Factura</th><th></th></tr></thead>
-      <tbody id="entBody"></tbody>
-    </table></div>
+    <div class="row"><input class="search" id="entSearch" placeholder="Buscar por producto, SKU o proveedor..."></div>
+    <div id="entList"></div>
   </div>`);
   main.appendChild(tablePanel);
 
-  function fillHist(){
-    const tbody = tablePanel.querySelector('#entBody');
-    tbody.innerHTML='';
-    [...DB.entradas].sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||'')).forEach(e=>{
+  function fillHist(filter){
+    const list = tablePanel.querySelector('#entList');
+    list.innerHTML='';
+    const f = norm(filter);
+    const filas = [...DB.entradas]
+      .filter(e=>{
+        if(!f) return true;
+        const prod = getProducto(e.sku);
+        return norm(e.sku).includes(f) || norm(prod?productoLabel(prod):e.nombreCompleto).includes(f) || norm(e.proveedor).includes(f);
+      })
+      .sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||''));
+    if(!filas.length){
+      list.appendChild(el(`<div class="hint">No hay entradas que coincidan.</div>`));
+    }
+    filas.forEach(e=>{
       const prod = getProducto(e.sku);
-      tbody.appendChild(el(`<tr>
-        <td data-label="Fecha">${e.fecha}</td><td data-label="SKU">${escapeHtml(e.sku||'—')}</td><td data-label="Producto">${escapeHtml(prod?productoLabel(prod):e.nombreCompleto)}</td>
-        <td data-label="Cantidad">${e.cantidad}</td><td data-label="Proveedor">${escapeHtml(e.proveedor)}</td><td data-label="Factura">${escapeHtml(e.factura)}</td>
-        <td data-label=""><button class="btn danger sm" data-id="${e.id}" title="Elimina este movimiento de entrada. Úsalo solo si se registró por error.">Eliminar</button></td>
-      </tr>`));
+      const row = el(`<div class="list-row">
+        <div class="list-main">
+          <div class="list-title">${escapeHtml(prod?productoLabel(prod):e.nombreCompleto)} ${prod&&prod.talla?`<span class="chip">${escapeHtml(prod.talla)}</span>`:''}</div>
+          <div class="list-meta">${e.fecha} · SKU ${escapeHtml(e.sku||'—')}${e.proveedor?(' · Proveedor: '+escapeHtml(e.proveedor)):''}${e.factura?(' · Factura: '+escapeHtml(e.factura)):''}</div>
+        </div>
+        <div class="list-side">
+          <span class="list-qty" style="color:var(--green)">+${e.cantidad}</span>
+          <button class="btn secondary sm" data-id="${e.id}" title="Elimina este movimiento de entrada. Úsalo solo si se registró por error.">Eliminar</button>
+        </div>
+      </div>`);
+      list.appendChild(row);
     });
-    tbody.querySelectorAll('button[data-id]').forEach(b=>{
+    list.querySelectorAll('button[data-id]').forEach(b=>{
       b.onclick=()=>{
         const e = DB.entradas.find(x=>x.id===b.dataset.id);
         const prod = getProducto(e.sku);
@@ -907,7 +942,8 @@ function renderEntradas(main){
       };
     });
   }
-  fillHist();
+  fillHist('');
+  tablePanel.querySelector('#entSearch').addEventListener('input', e=>fillHist(e.target.value));
 }
 
 // ---------------------------------------------------------------
@@ -991,46 +1027,50 @@ function renderSalidas(main){
     });
   }
 
-  const tablePanel = el(`<div class="panel">
-    <h2>Historial de salidas (${DB.salidas.length})</h2>
-    <div class="row"><input class="search" id="salSearch" placeholder="Buscar por SKU, producto, persona o centro de costo..."></div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Fecha</th><th>SKU</th><th>Producto</th><th>Talla</th><th>Cant.</th><th>Persona</th><th>C. Costo</th><th>Estado</th><th></th></tr></thead>
-      <tbody id="salBody"></tbody>
-    </table></div>
+  // Resumen por producto: cuánto ha salido de cada uno, sin mostrar cada
+  // movimiento individual ni el estado de mapeo (según lo pediste).
+  const resumenPanel = el(`<div class="panel">
+    <h2>Productos con salidas registradas</h2>
+    <div class="row"><input class="search" id="salSearch" placeholder="Buscar por producto, SKU o proveedor..."></div>
+    <div id="salList"></div>
   </div>`);
-  main.appendChild(tablePanel);
+  main.appendChild(resumenPanel);
+
   function fillSalidas(filter){
-    const tbody2 = tablePanel.querySelector('#salBody');
-    tbody2.innerHTML='';
+    const list = resumenPanel.querySelector('#salList');
+    list.innerHTML='';
     const f = norm(filter);
-    [...DB.salidas]
-      .filter(s=>{
-        if(!f) return true;
-        const prod = getProducto(s.sku);
-        return norm(s.sku).includes(f) || norm(prod?productoLabel(prod):s.nombreCompleto).includes(f) || norm(s.persona).includes(f) || norm(s.centroCosto).includes(f);
-      })
-      .sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||''))
-      .forEach(s=>{
-        const prod = getProducto(s.sku);
-        tbody2.appendChild(el(`<tr>
-          <td data-label="Fecha">${s.fecha}</td><td data-label="SKU">${escapeHtml(s.sku||'—')}</td><td data-label="Producto">${escapeHtml(prod?productoLabel(prod):s.nombreCompleto)}</td><td data-label="Talla">${escapeHtml(prod?tallaLabel(prod):'—')}</td>
-          <td data-label="Cant.">${s.cantidad}</td><td data-label="Persona">${escapeHtml(s.persona)}</td><td data-label="C. Costo">${escapeHtml(s.centroCosto)}</td>
-          <td data-label="Estado"><span class="badge ${s.estado==='pendiente'?'pendiente':'mapeado'}">${s.estado}</span></td>
-          <td data-label=""><button class="btn danger sm" data-id="${s.id}" title="Elimina este movimiento de salida. Úsalo solo si se registró por error.">Eliminar</button></td>
-        </tr>`));
-      });
-    tbody2.querySelectorAll('button[data-id]').forEach(b=>{
-      b.onclick = ()=>{
-        const s = DB.salidas.find(x=>x.id===b.dataset.id);
-        const prod = getProducto(s.sku);
-        if(!confirm(`¿Eliminar esta salida?\n\n${s.fecha} · ${prod?productoLabel(prod):s.nombreCompleto} · Cantidad: ${s.cantidad}\n\nEsto devolverá ${s.cantidad} unidades al stock actual de ese producto. Úsalo solo si se registró por error.`)) return;
-        DB.salidas = DB.salidas.filter(x=>x.id!==b.dataset.id); save('salidas'); render();
-      };
+    const grupos = {};
+    DB.salidas.forEach(s=>{
+      if(!s.sku) return; // los pendientes de mapeo no cuentan como "cargados" todavía
+      if(!grupos[s.sku]) grupos[s.sku] = {sku:s.sku, total:0, movimientos:0, ultima:''};
+      grupos[s.sku].total += Number(s.cantidad);
+      grupos[s.sku].movimientos += 1;
+      if(!grupos[s.sku].ultima || s.fecha > grupos[s.sku].ultima) grupos[s.sku].ultima = s.fecha;
+    });
+    let filas = Object.values(grupos).map(g=>({...g, m: getProducto(g.sku)}));
+    filas = filas.filter(g=>{
+      if(!f) return true;
+      return norm(g.sku).includes(f) || norm(g.m?productoLabel(g.m):'').includes(f) || norm(g.m?.proveedor).includes(f);
+    });
+    filas.sort((a,b)=>b.total-a.total);
+    if(!filas.length){
+      list.appendChild(el(`<div class="hint">Todavía no hay salidas cargadas con producto asignado.</div>`));
+    }
+    filas.forEach(g=>{
+      list.appendChild(el(`<div class="list-row">
+        <div class="list-main">
+          <div class="list-title">${escapeHtml(g.m?productoLabel(g.m):g.sku)} ${g.m&&g.m.talla?`<span class="chip">${escapeHtml(g.m.talla)}</span>`:''}</div>
+          <div class="list-meta">SKU ${escapeHtml(g.sku)}${g.m&&g.m.proveedor?(' · Proveedor: '+escapeHtml(g.m.proveedor)):''} · ${g.movimientos} movimiento(s) · Última salida: ${g.ultima}</div>
+        </div>
+        <div class="list-side">
+          <span class="list-qty" style="color:var(--red)">-${g.total}</span>
+        </div>
+      </div>`));
     });
   }
   fillSalidas('');
-  tablePanel.querySelector('#salSearch').addEventListener('input', e=>fillSalidas(e.target.value));
+  resumenPanel.querySelector('#salSearch').addEventListener('input', e=>fillSalidas(e.target.value));
 }
 
 // ---------------------------------------------------------------
