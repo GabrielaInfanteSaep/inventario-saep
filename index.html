@@ -191,7 +191,8 @@ async function loadAll(){
       }
     }catch(e){
       console.error('Error leyendo Supabase:', e);
-      document.getElementById('statusMsg').textContent = '⚠ Error de conexión a Supabase';
+      const detalle = (e && (e.message || e.error_description || e.hint || e.details)) || '';
+      document.getElementById('statusMsg').textContent = '⚠ Error de conexión a Supabase' + (detalle?(': '+detalle):'');
     }
   } else {
     for(const k of keys){
@@ -214,7 +215,7 @@ async function loadAll(){
 async function save(key){
   try{
     if(supabaseClient){
-      const { error } = await supabaseClient.from('app_storage').upsert({key, value: DB[key], updated_at: new Date().toISOString()});
+      const { error } = await supabaseClient.from('app_storage').upsert({key, value: DB[key], updated_at: new Date().toISOString()}, {onConflict:'key'});
       if(error) throw error;
       document.getElementById('statusMsg').textContent = 'Guardado en Supabase (compartido con el equipo)';
     } else {
@@ -222,8 +223,11 @@ async function save(key){
       document.getElementById('statusMsg').textContent = 'Guardado (compartido con el equipo)';
     }
   }catch(e){
-    document.getElementById('statusMsg').textContent = 'Error al guardar';
-    console.error(e);
+    // Se muestra el motivo real del error (no solo "Error al guardar") para poder
+    // diagnosticarlo: suele ser un tema de permisos/políticas en Supabase.
+    const detalle = (e && (e.message || e.error_description || e.hint || e.details)) || JSON.stringify(e);
+    document.getElementById('statusMsg').textContent = '⚠ Error al guardar: ' + detalle;
+    console.error('Error al guardar en', key, e);
   }
 }
 
@@ -232,6 +236,18 @@ async function save(key){
 // ---------------------------------------------------------------
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
+// fFecha(): convierte una fecha guardada como "aaaa-mm-dd" a texto "dd-mm-aaaa"
+// para mostrarla en listas, tablas y tarjetas. Los <input type="date"> siempre
+// guardan y reciben internamente en formato aaaa-mm-dd (estándar HTML) —
+// el formato que el navegador MUESTRA en el selector de calendario depende
+// de la configuración regional del sistema operativo/navegador de cada
+// persona y no se puede forzar al 100% desde la página.
+function fFecha(iso){
+  if(!iso) return '—';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(!m) return iso;
+  return `${m[3]}-${m[2]}-${m[1]}`;
+}
 
 const ADMIN_USER = 'SaepAdmin';
 const ADMIN_PASS = 'Saep1095';
@@ -426,7 +442,7 @@ function renderDashboard(main){
       <h2>Actividad reciente</h2>
       ${movimientos.map(m=>`<div class="activity-item">
         <span><span class="badge ${m.tipo==='Entrada'?'cuadrado':'pendiente'}">${m.tipo}</span> ${escapeHtml(m.detalle||'')}</span>
-        <span class="side">${m.fecha} · <strong style="color:${m.tipo==='Entrada'?'var(--green)':'var(--red)'}">${m.tipo==='Entrada'?'+':'-'}${m.cantidad}</strong> ${escapeHtml(m.extra||'')}</span>
+        <span class="side">${fFecha(m.fecha)} · <strong style="color:${m.tipo==='Entrada'?'var(--green)':'var(--red)'}">${m.tipo==='Entrada'?'+':'-'}${m.cantidad}</strong> ${escapeHtml(m.extra||'')}</span>
       </div>`).join('')}
     </div>`));
   }
@@ -464,12 +480,40 @@ function renderDashboard(main){
 // ---------------------------------------------------------------
 // MAESTRO DE PRODUCTOS
 // ---------------------------------------------------------------
+// Sugiere el siguiente SKU y código de barra en base al último producto
+// agregado al maestro (mayor número encontrado), para no tener que inventar
+// uno manualmente cada vez.
+function siguienteSku(){
+  let maxNum = 0, prefix = 'SKU-', pad = 5, encontrado = false;
+  DB.maestro.forEach(m=>{
+    const match = (m.sku||'').match(/^(.*?)(\d+)$/);
+    if(match){
+      const num = parseInt(match[2],10);
+      if(num > maxNum){ maxNum = num; prefix = match[1]; pad = match[2].length; encontrado = true; }
+    }
+  });
+  if(!encontrado) return '';
+  return prefix + (maxNum+1).toString().padStart(pad,'0');
+}
+function siguienteBarra(){
+  let maxNum = 0, len = 13;
+  DB.maestro.forEach(m=>{
+    const b = (m.codigoBarra||'').toString().trim();
+    if(/^\d+$/.test(b)){
+      const num = parseInt(b,10);
+      if(num > maxNum){ maxNum = num; len = b.length; }
+    }
+  });
+  if(maxNum===0) return '';
+  return (maxNum+1).toString().padStart(len,'0');
+}
+
 function renderMaestro(main){
   const panel = el(`<div class="panel">
     <h2>Nuevo producto</h2>
     <div class="row">
-      <div class="field"><label>SKU / Código *</label><input id="mSku"></div>
-      <div class="field"><label>Código de barra</label><input id="mBarra"></div>
+      <div class="field"><label>SKU / Código *</label><input id="mSku" value="${escapeHtml(siguienteSku())}"></div>
+      <div class="field"><label>Código de barra</label><input id="mBarra" value="${escapeHtml(siguienteBarra())}"></div>
       <div class="field"><label>Nombre prenda *</label><input id="mNombre"></div>
       <div class="field"><label>Proveedor</label><input id="mProveedor"></div>
       <div class="field"><label>Talla</label><input id="mTalla" placeholder="Ej: T-XL"></div>
@@ -480,7 +524,7 @@ function renderMaestro(main){
     </div>
     <div class="row"><button class="btn" id="mAdd">Agregar producto</button>
       <button class="btn secondary" id="mExport">Exportar Excel</button></div>
-    <div class="hint">El "Nombre completo" es la clave única que se cruza automáticamente con Kizeo y con las facturas de entrada. Debe quedar igual a como aparece en esos archivos.</div>
+    <div class="hint">El SKU y el código de barra ya vienen sugeridos siguiendo el correlativo del último producto agregado — puedes editarlos si no te sirven. El "Nombre completo" es la clave única que se cruza automáticamente con Kizeo y con las facturas de entrada; debe quedar igual a como aparece en esos archivos.</div>
   </div>`);
   main.appendChild(panel);
 
@@ -624,7 +668,7 @@ function renderEntradas(main){
     <div class="section-tag">Registro rápido</div>
     <h2>📷 Lector de código de barra</h2>
     <div class="row">
-      <div class="field"><label>Fecha de la entrada</label><input type="date" id="scanFecha" value="${todayStr()}"></div>
+      <div class="field"><label>Fecha de la entrada</label><input type="date" id="scanFecha" lang="es-CL" value="${todayStr()}"></div>
       <div class="field" style="flex:1;min-width:180px;"><label>N° Factura (opcional, aplica a todo el lote)</label><input id="scanFactura"></div>
     </div>
     <div class="scan-box" id="scanBoxOuter">
@@ -775,7 +819,7 @@ function renderEntradas(main){
   const panel = el(`<div class="panel">
     <h2>Registrar entrada manual</h2>
     <div class="row">
-      <div class="field"><label>Fecha *</label><input id="eFecha" type="date" value="${todayStr()}"></div>
+      <div class="field"><label>Fecha *</label><input id="eFecha" type="date" lang="es-CL" value="${todayStr()}"></div>
       <div class="field" style="flex:1;min-width:260px;"><label>Producto (nombre completo) *</label>
         <input id="eProducto" list="maestroProductosList" placeholder="Empieza a escribir el nombre..." autocomplete="off">
         <datalist id="maestroProductosList">${datalistOptions}</datalist>
@@ -924,7 +968,7 @@ function renderEntradas(main){
       const row = el(`<div class="list-row">
         <div class="list-main">
           <div class="list-title">${escapeHtml(prod?productoLabel(prod):e.nombreCompleto)} ${prod&&prod.talla?`<span class="chip">${escapeHtml(prod.talla)}</span>`:''}</div>
-          <div class="list-meta">${e.fecha} · SKU ${escapeHtml(e.sku||'—')}${e.proveedor?(' · Proveedor: '+escapeHtml(e.proveedor)):''}${e.factura?(' · Factura: '+escapeHtml(e.factura)):''}</div>
+          <div class="list-meta">${fFecha(e.fecha)} · SKU ${escapeHtml(e.sku||'—')}${e.proveedor?(' · Proveedor: '+escapeHtml(e.proveedor)):''}${e.factura?(' · Factura: '+escapeHtml(e.factura)):''}</div>
         </div>
         <div class="list-side">
           <span class="list-qty" style="color:var(--green)">+${e.cantidad}</span>
@@ -937,7 +981,7 @@ function renderEntradas(main){
       b.onclick=()=>{
         const e = DB.entradas.find(x=>x.id===b.dataset.id);
         const prod = getProducto(e.sku);
-        if(!confirm(`¿Eliminar esta entrada?\n\n${e.fecha} · ${prod?productoLabel(prod):e.nombreCompleto} · Cantidad: ${e.cantidad}\n\nEsto restará ${e.cantidad} unidades del stock actual de ese producto. Úsalo solo si se registró por error.`)) return;
+        if(!confirm(`¿Eliminar esta entrada?\n\n${fFecha(e.fecha)} · ${prod?productoLabel(prod):e.nombreCompleto} · Cantidad: ${e.cantidad}\n\nEsto restará ${e.cantidad} unidades del stock actual de ese producto. Úsalo solo si se registró por error.`)) return;
         DB.entradas = DB.entradas.filter(x=>x.id!==b.dataset.id); save('entradas'); render();
       };
     });
@@ -1013,7 +1057,7 @@ function renderSalidas(main){
     const tbody = pendPanel.querySelector('#pendBody');
     pendientes.forEach(s=>{
       tbody.appendChild(el(`<tr>
-        <td>${s.fecha}</td><td>${escapeHtml(s.nombreCompleto)}</td><td>${s.cantidad}</td>
+        <td>${fFecha(s.fecha)}</td><td>${escapeHtml(s.nombreCompleto)}</td><td>${s.cantidad}</td>
         <td><select data-id="${s.id}"><option value="">Seleccionar producto...</option>${skuOptions}</select></td>
       </tr>`));
     });
@@ -1061,7 +1105,7 @@ function renderSalidas(main){
       list.appendChild(el(`<div class="list-row">
         <div class="list-main">
           <div class="list-title">${escapeHtml(g.m?productoLabel(g.m):g.sku)} ${g.m&&g.m.talla?`<span class="chip">${escapeHtml(g.m.talla)}</span>`:''}</div>
-          <div class="list-meta">SKU ${escapeHtml(g.sku)}${g.m&&g.m.proveedor?(' · Proveedor: '+escapeHtml(g.m.proveedor)):''} · ${g.movimientos} movimiento(s) · Última salida: ${g.ultima}</div>
+          <div class="list-meta">SKU ${escapeHtml(g.sku)}${g.m&&g.m.proveedor?(' · Proveedor: '+escapeHtml(g.m.proveedor)):''} · ${g.movimientos} movimiento(s) · Última salida: ${fFecha(g.ultima)}</div>
         </div>
         <div class="list-side">
           <span class="list-qty" style="color:var(--red)">-${g.total}</span>
@@ -1080,8 +1124,8 @@ function renderCorte(main){
   const panel = el(`<div class="panel">
     <h2>Generar corte histórico</h2>
     <div class="row">
-      <div class="field"><label>Fecha inicio</label><input type="date" id="cIni"></div>
-      <div class="field"><label>Fecha fin</label><input type="date" id="cFin"></div>
+      <div class="field"><label>Fecha inicio</label><input type="date" id="cIni" lang="es-CL"></div>
+      <div class="field"><label>Fecha fin</label><input type="date" id="cFin" lang="es-CL"></div>
       <div class="field"><label>Nombre del corte</label><input id="cNombre" placeholder="Ej: Corte Agosto 2026"></div>
       <button class="btn" id="cGenerar" style="align-self:flex-end;">Generar corte</button>
     </div>
@@ -1109,7 +1153,7 @@ function renderCorte(main){
   };
 
   if(DB.cortes.length){
-    const opciones = [...DB.cortes].reverse().map(c=>`<option value="${c.id}">${escapeHtml(c.nombre)} (${c.fechaInicio} → ${c.fechaFin})</option>`).join('');
+    const opciones = [...DB.cortes].reverse().map(c=>`<option value="${c.id}">${escapeHtml(c.nombre)} (${fFecha(c.fechaInicio)} → ${fFecha(c.fechaFin)})</option>`).join('');
     const selPanel = el(`<div class="panel">
       <div class="row">
         <div class="field" style="flex:1;min-width:220px;"><label>Ver corte guardado</label><select id="corteSelect">${opciones}</select></div>
@@ -1178,10 +1222,10 @@ function renderCorte(main){
         tbody.appendChild(el(`<tr><td colspan="10" style="text-align:center;color:var(--text-secondary);">No hay productos que coincidan con el filtro.</td></tr>`));
       }
       selPanel.querySelector('#corteResumen').innerHTML = `
-        <div class="card"><div class="label">Stock inicial total (${corte.fechaInicio})</div><div class="value">${tIni}</div></div>
+        <div class="card"><div class="label">Stock inicial total (${fFecha(corte.fechaInicio)})</div><div class="value">${tIni}</div></div>
         <div class="card"><div class="label">Entradas del período</div><div class="value" style="color:var(--green)">+${tEnt}</div></div>
         <div class="card"><div class="label">Salidas del período</div><div class="value" style="color:var(--red)">-${tSal}</div></div>
-        <div class="card"><div class="label">Stock final (${corte.fechaFin})</div><div class="value">${tFin}</div></div>
+        <div class="card"><div class="label">Stock final (${fFecha(corte.fechaFin)})</div><div class="value">${tFin}</div></div>
         <div class="card"><div class="label">Valorizado stock final</div><div class="value">${fmtMoney(valorFin)}</div></div>
       `;
       selPanel.querySelector('#expCorte').onclick = ()=>{
@@ -1221,17 +1265,32 @@ function renderConteo(main){
     main.appendChild(el('<div class="panel"><h2>Conteo físico</h2><div class="hint">Primero genera un corte en la pestaña "Corte histórico" — el conteo físico siempre se hace sobre un corte.</div></div>'));
     return;
   }
-  const opciones = [...DB.cortes].reverse().map(c=>`<option value="${c.id}">${escapeHtml(c.nombre)} (${c.fechaInicio} → ${c.fechaFin})</option>`).join('');
+  const opciones = [...DB.cortes].reverse().map(c=>`<option value="${c.id}">${escapeHtml(c.nombre)} (${fFecha(c.fechaInicio)} → ${fFecha(c.fechaFin)})</option>`).join('');
   const panel = el(`<div class="panel">
-    <h2>Conteo físico (comparar contra lo que dice el sistema)</h2>
-    <div class="hint" style="margin-bottom:12px;">Elige el corte que quieres verificar. Por cada producto, anota cuántas unidades contaste físicamente en bodega en la columna "Cantidad contada". El sistema compara ese número contra el "Stock que debería haber" (calculado con las entradas y salidas registradas) y te muestra la diferencia automáticamente. Si sobra o falta algo, escribe el motivo en "Observación".</div>
-    <div class="row"><div class="field" style="flex:1;min-width:220px;"><label>Corte a verificar</label><select id="conCorteSel">${opciones}</select></div></div>
+    <h2>Conteo físico</h2>
+    <div class="row" style="align-items:stretch;">
+      <div style="flex:1;min-width:260px;background:var(--steel-pale);border-radius:8px;padding:12px 14px;font-size:13px;line-height:1.5;">
+        <strong>¿Para qué sirve esta pestaña?</strong><br>
+        Es para verificar que lo que el sistema calcula (según las entradas y salidas registradas) coincide con lo que realmente hay en bodega cuando cuentas físicamente.
+        <ol style="margin:8px 0 0 18px;padding:0;">
+          <li>Elige el corte que quieres verificar abajo.</li>
+          <li>Ve producto por producto y escribe en "Cantidad contada" lo que contaste físicamente.</li>
+          <li>El sistema calcula solo la "Diferencia" (contado − lo que debería haber). Si hay diferencia, escribe el motivo en "Observación" (ej: "se traspasó a otra bodega", "producto dañado", "no se registró la entrada a tiempo").</li>
+          <li>Cuando termines, usa el botón <strong>"Aplicar diferencias al inventario"</strong> más abajo: eso corrige el stock del sistema para que quede igual a lo contado (crea automáticamente un movimiento de ajuste por cada diferencia).</li>
+        </ol>
+      </div>
+      <div class="field" style="flex:1;min-width:220px;"><label>Corte a verificar</label><select id="conCorteSel">${opciones}</select></div>
+    </div>
     <div id="conteoStats" class="cards"></div>
     <div class="row"><input class="search" id="conSearch" placeholder="Buscar producto o SKU..."></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>SKU</th><th>Producto</th><th>Stock que debería haber</th><th>Cantidad contada</th><th>Diferencia</th><th>Estado</th><th>Observación (obligatoria si hay diferencia)</th></tr></thead>
+      <thead><tr><th>SKU</th><th>Producto</th><th>Talla</th><th>Stock que debería haber</th><th>Cantidad contada</th><th>Diferencia</th><th>Estado</th><th>Observación (obligatoria si hay diferencia)</th></tr></thead>
       <tbody id="conBody"></tbody>
     </table></div>
+    <div class="row" style="margin-top:14px;">
+      <button class="btn" id="conAplicar">📦 Aplicar diferencias al inventario (cuadrar stock)</button>
+      <span class="hint" id="conAplicarHint" style="margin:0;"></span>
+    </div>
   </div>`);
   main.appendChild(panel);
 
@@ -1243,7 +1302,7 @@ function renderConteo(main){
     const f = norm(panel.querySelector('#conSearch') ? panel.querySelector('#conSearch').value : '');
     const tbody = panel.querySelector('#conBody');
     tbody.innerHTML='';
-    let faltantes=0, sobrantes=0, cuadrados=0, sinContar=0, criticos=0;
+    let faltantes=0, sobrantes=0, cuadrados=0, sinContar=0, criticos=0, pendientesAplicar=0;
     corte.detalle.forEach(d=>{
       const m = getProducto(d.sku);
       if(f && !(norm(d.sku).includes(f) || norm(m?productoLabel(m):'').includes(f))) return;
@@ -1257,21 +1316,24 @@ function renderConteo(main){
         else {estado='cuadrado';cuadrados++;rowClass='row-cuadrado';}
       } else sinContar++;
       const faltaObs = diferencia!==null && diferencia!==0 && !(registro && registro.causa && registro.causa.trim());
+      const yaAplicado = registro && registro.aplicado;
+      if(diferencia!==null && diferencia!==0 && !yaAplicado && !faltaObs) pendientesAplicar++;
       const esCritico = m && d.stockTeorico<=Number(m.stockCritico||0);
       if(esCritico) criticos++;
       const tr = el(`<tr class="${rowClass}">
         <td data-label="SKU">${escapeHtml(d.sku)}</td>
         <td data-label="Producto">${escapeHtml(m?productoLabel(m):'')} ${esCritico?'<span class="badge critico">Crítico</span>':''}</td>
+        <td data-label="Talla">${escapeHtml(m?tallaLabel(m):'—')}</td>
         <td data-label="Stock que debería haber">${d.stockTeorico}</td>
-        <td data-label="Cantidad contada"><input class="count-input" type="number" data-sku="${escapeHtml(d.sku)}" value="${tieneConteo?registro.cantidadFisica:''}" placeholder="—"></td>
+        <td data-label="Cantidad contada"><input class="count-input" type="number" data-sku="${escapeHtml(d.sku)}" value="${tieneConteo?registro.cantidadFisica:''}" placeholder="—" ${yaAplicado?'disabled':''}></td>
         <td data-label="Diferencia">${diferencia===null?'—':(diferencia>0?'+'+diferencia:diferencia)}</td>
-        <td data-label="Estado">${estado==='sin_contar'?'<span class="badge pendiente">sin contar</span>':`<span class="badge ${estado}">${estado}</span>`}</td>
-        <td data-label="Observación"><input type="text" data-obs="${escapeHtml(d.sku)}" style="width:100%;border-color:${faltaObs?'var(--red)':'var(--border)'};" value="${escapeHtml(registro?registro.causa:'')}" placeholder="${faltaObs?'⚠ Escribe el motivo de la diferencia':'Sin diferencia'}"></td>
+        <td data-label="Estado">${yaAplicado?'<span class="badge mapeado">✓ aplicado</span>':(estado==='sin_contar'?'<span class="badge pendiente">sin contar</span>':`<span class="badge ${estado}">${estado}</span>`)}</td>
+        <td data-label="Observación"><input type="text" data-obs="${escapeHtml(d.sku)}" style="width:100%;border-color:${faltaObs?'var(--red)':'var(--border)'};" value="${escapeHtml(registro?registro.causa:'')}" placeholder="${faltaObs?'⚠ Escribe el motivo de la diferencia':'Sin diferencia'}" ${yaAplicado?'disabled':''}></td>
       </tr>`);
       tbody.appendChild(tr);
     });
     if(!tbody.children.length){
-      tbody.appendChild(el(`<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);">No hay productos que coincidan con la búsqueda.</td></tr>`));
+      tbody.appendChild(el(`<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);">No hay productos que coincidan con la búsqueda.</td></tr>`));
     }
     panel.querySelector('#conteoStats').innerHTML = `
       <div class="card"><div class="label">Sin contar todavía</div><div class="value">${sinContar}</div></div>
@@ -1279,6 +1341,13 @@ function renderConteo(main){
       <div class="card ${faltantes>0?'alert':''}"><div class="label">Faltantes</div><div class="value" style="color:var(--red)">${faltantes}</div></div>
       <div class="card"><div class="label">Sobrantes</div><div class="value" style="color:var(--amber)">${sobrantes}</div></div>
     `;
+    const aplicarBtn = panel.querySelector('#conAplicar');
+    const aplicarHint = panel.querySelector('#conAplicarHint');
+    aplicarBtn.disabled = pendientesAplicar===0;
+    aplicarBtn.style.opacity = pendientesAplicar===0 ? '0.5' : '1';
+    aplicarHint.textContent = pendientesAplicar>0
+      ? `${pendientesAplicar} producto(s) con diferencia lista(s) para aplicar.`
+      : 'No hay diferencias pendientes de aplicar (o falta escribir la observación de alguna).';
 
     tbody.querySelectorAll('input[data-sku]').forEach(inp=>{
       inp.addEventListener('change', ()=>{
@@ -1286,7 +1355,7 @@ function renderConteo(main){
         const val = inp.value;
         const obsInput = tbody.querySelector(`input[data-obs="${CSS.escape(sku)}"]`);
         let registro = conteos.find(c=>c.sku===sku);
-        if(!registro){ registro={sku, cantidadFisica:val, causa:obsInput.value.trim(), fecha:new Date().toISOString()}; conteos.push(registro); }
+        if(!registro){ registro={sku, cantidadFisica:val, causa:obsInput.value.trim(), fecha:new Date().toISOString(), aplicado:false}; conteos.push(registro); }
         else { registro.cantidadFisica = val; registro.fecha = new Date().toISOString(); }
         save('conteos');
         fill(corteId);
@@ -1296,12 +1365,40 @@ function renderConteo(main){
       inp.addEventListener('change', ()=>{
         const sku = inp.dataset.obs;
         let registro = conteos.find(c=>c.sku===sku);
-        if(!registro){ registro={sku, cantidadFisica:'', causa:inp.value.trim(), fecha:new Date().toISOString()}; conteos.push(registro); }
+        if(!registro){ registro={sku, cantidadFisica:'', causa:inp.value.trim(), fecha:new Date().toISOString(), aplicado:false}; conteos.push(registro); }
         else registro.causa = inp.value.trim();
         save('conteos');
         fill(corteId);
       });
     });
+
+    aplicarBtn.onclick = ()=>{
+      const aAplicar = corte.detalle.map(d=>{
+        const registro = conteos.find(c=>c.sku===d.sku);
+        if(!registro || registro.cantidadFisica===undefined || registro.cantidadFisica==='' || registro.aplicado) return null;
+        const diferencia = Number(registro.cantidadFisica) - d.stockTeorico;
+        if(diferencia===0 || !registro.causa || !registro.causa.trim()) return null;
+        return {d, registro, diferencia};
+      }).filter(Boolean);
+      if(!aAplicar.length){ alert('No hay diferencias pendientes de aplicar.'); return; }
+      const resumen = aAplicar.map(x=>{
+        const m = getProducto(x.d.sku);
+        return `${x.diferencia>0?'+':''}${x.diferencia} · ${m?productoLabel(m):x.d.sku}`;
+      }).join('\n');
+      if(!confirm(`Se van a crear ${aAplicar.length} movimiento(s) de ajuste para que el stock del sistema quede igual a lo contado:\n\n${resumen}\n\n¿Continuar?`)) return;
+      const fechaAjuste = todayStr();
+      aAplicar.forEach(({d,registro,diferencia})=>{
+        const m = getProducto(d.sku);
+        if(diferencia>0){
+          DB.entradas.push({id:uid(), fecha:fechaAjuste, sku:d.sku, nombreCompleto: m?m.nombreCompleto:d.sku, cantidad:diferencia, proveedor:'Ajuste por conteo físico', factura:'', observaciones:'Ajuste por conteo físico: '+registro.causa});
+        } else {
+          DB.salidas.push({id:uid(), fecha:fechaAjuste, sku:d.sku, nombreCompleto: m?m.nombreCompleto:d.sku, cantidad:Math.abs(diferencia), persona:'Ajuste por conteo físico', centroCosto:'', tipoSolicitud:'Ajuste: '+registro.causa, estado:'manual'});
+        }
+        registro.aplicado = true;
+      });
+      save('conteos'); save('entradas'); save('salidas');
+      render();
+    };
   }
   const defaultId = DB.cortes[DB.cortes.length-1].id;
   panel.querySelector('#conCorteSel').value = defaultId;
