@@ -602,6 +602,10 @@ function renderMaestro(main){
       <thead><tr><th>SKU</th><th>Cód. barra</th><th>Producto</th><th>Talla</th><th>Proveedor</th><th>Precio</th><th>Stock crít.</th><th>Stock actual</th><th></th></tr></thead>
       <tbody id="maeBody"></tbody>
     </table></div>
+    <div class="row" style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px;">
+      <button class="btn danger" id="mDeleteAll">🗑 Eliminar TODOS los productos del maestro</button>
+      <span class="hint" style="margin:0;">Borra los ${DB.maestro.length} productos y también todo el historial de entradas y salidas asociado. Pide usuario y contraseña de administrador. No se puede deshacer.</span>
+    </div>
   </div>`);
   main.appendChild(tablePanel);
 
@@ -632,6 +636,18 @@ function renderMaestro(main){
   }
   fill('');
   tablePanel.querySelector('#maeSearch').addEventListener('input', e=>fill(e.target.value));
+  tablePanel.querySelector('#mDeleteAll').onclick = ()=>{
+    if(!DB.maestro.length){ alert('El maestro ya está vacío.'); return; }
+    if(!confirm(`⚠ Vas a eliminar TODOS los ${DB.maestro.length} productos del maestro, además de ${DB.entradas.length} entradas y ${DB.salidas.length} salidas registradas.\n\nEsto no se puede deshacer. ¿Estás seguro?`)) return;
+    if(!checkAdmin()) return;
+    if(!confirm('Última confirmación: se borrará TODO el maestro de productos y su historial. ¿Continuar?')) return;
+    DB.maestro = [];
+    DB.entradas = [];
+    DB.salidas = [];
+    DB.alias = {};
+    save('maestro'); save('entradas'); save('salidas'); save('alias');
+    render();
+  };
 
   panel.querySelector('#mAdd').onclick = ()=>{
     const sku = panel.querySelector('#mSku').value.trim();
